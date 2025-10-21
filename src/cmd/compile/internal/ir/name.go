@@ -62,6 +62,8 @@ type Name struct {
 	// Outer points to the immediately enclosing function's copy of this
 	// closure variable. If not a closure variable, then Outer is nil.
 	Outer *Name
+
+	Ownership OwnershipKind
 }
 
 func (n *Name) isExpr() {}
@@ -398,3 +400,10 @@ type Embed struct {
 	Pos      src.XPos
 	Patterns []string
 }
+
+type OwnershipKind uint8
+
+const (
+	StateValid OwnershipKind = iota // variable is in a valid state
+	StateMoved                      // variable has been moved
+)

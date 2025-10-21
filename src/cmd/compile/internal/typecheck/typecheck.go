@@ -15,6 +15,12 @@ import (
 	"cmd/internal/src"
 )
 
+// isUserCode returns true if the position is in user code (not standard library).
+func isUserCode(pos src.XPos) bool {
+	filename := base.Ctxt.InnermostPos(pos).AbsFilename()
+	return !strings.HasPrefix(filename, "$GOROOT") && strings.HasSuffix(filename, ".go")
+}
+
 func AssignExpr(n ir.Node) ir.Node { return typecheck(n, ctxExpr|ctxAssign) }
 func Expr(n ir.Node) ir.Node       { return typecheck(n, ctxExpr) }
 func Stmt(n ir.Node) ir.Node       { return typecheck(n, ctxStmt) }
@@ -232,6 +238,17 @@ func typecheck1(n ir.Node, top int) ir.Node {
 			return n
 		}
 		if top&ctxAssign == 0 {
+			// check for use of moved value
+			if isUserCode(n.Pos()) && n.Ownership == ir.StateMoved {
+				varLine := base.Ctxt.InnermostPos(n.Pos()).RelLine()
+				currentLine := base.Ctxt.InnermostPos(base.Pos).RelLine()
+				if currentLine > varLine {
+					base.Errorf("use of moved value: %v", n)
+					n.SetType(nil)
+					return n
+				}
+			}
+
 			// not a write to the variable
 			if ir.IsBlank(n) {
 				base.Errorf("cannot use _ as value")

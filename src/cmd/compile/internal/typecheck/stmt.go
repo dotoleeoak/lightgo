@@ -161,6 +161,15 @@ assignOK:
 			rhs[i] = AssignConv(r, lhs[i].Type(), "assignment")
 		}
 	}
+
+	// move semantics: after assignment, mark variables as moved
+	if isUserCode(stmt.Pos()) {
+		for _, n := range rhs {
+			if n.Op() == ir.ONAME {
+				n.(*ir.Name).Ownership = ir.StateMoved
+			}
+		}
+	}
 }
 
 func plural(n int) string {
