@@ -7,18 +7,35 @@ package typecheck
 import (
 	"fmt"
 	"go/constant"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"cmd/compile/internal/base"
 	"cmd/compile/internal/ir"
 	"cmd/compile/internal/types"
 	"cmd/internal/src"
+	"internal/buildcfg"
 )
 
-// isUserCode returns true if the position is in user code (not standard library).
+// isUserCode returns true if the position is in user code
 func isUserCode(pos src.XPos) bool {
 	filename := base.Ctxt.InnermostPos(pos).AbsFilename()
-	return !strings.HasPrefix(filename, "$GOROOT") && strings.HasSuffix(filename, ".go")
+
+	// Check for standard library
+	if strings.HasPrefix(filename, "$GOROOT") {
+		return false
+	}
+	if buildcfg.GOROOT != "" && strings.HasPrefix(filename, buildcfg.GOROOT) {
+		return false
+	}
+
+	pkgPath := filepath.Join(os.Getenv("GOPATH"), "pkg")
+	if strings.HasPrefix(filename, pkgPath) {
+		return false
+	}
+
+	return true
 }
 
 // needsMoveSemantics returns true if the type requires ownership tracking.
