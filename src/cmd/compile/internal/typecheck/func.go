@@ -256,6 +256,16 @@ func tcCall(n *ir.CallExpr, top int) ir.Node {
 	}
 
 	typecheckaste(ir.OCALL, n.Fun, n.IsDDD, t.Params(), n.Args, func() string { return fmt.Sprintf("argument to %v", n.Fun) })
+
+	// move semantics: after passing to function, mark struct arguments as moved
+	if isUserCode(n.Pos()) {
+		for _, arg := range n.Args {
+			if arg.Op() == ir.ONAME {
+				arg.(*ir.Name).Ownership = ir.StateMoved
+			}
+		}
+	}
+
 	FixVariadicCall(n)
 	FixMethodCall(n)
 	if t.NumResults() == 0 {
