@@ -21,6 +21,33 @@ func isUserCode(pos src.XPos) bool {
 	return !strings.HasPrefix(filename, "$GOROOT") && strings.HasSuffix(filename, ".go")
 }
 
+// needsMoveSemantics returns true if the type requires ownership tracking.
+// Only heap-allocated types need move semantics: slice, map, channel, string, func,
+// and arrays/structs containing these types.
+// Stack-allocated types (bool, int, float, pointer) don't need tracking.
+func needsMoveSemantics(t *types.Type) bool {
+	if t == nil {
+		return false
+	}
+
+	switch t.Kind() {
+	case types.TSLICE, types.TMAP, types.TCHAN, types.TSTRING, types.TFUNC:
+		return true
+	case types.TARRAY:
+		return needsMoveSemantics(t.Elem())
+	case types.TSTRUCT:
+		for _, f := range t.Fields() {
+			if needsMoveSemantics(f.Type) {
+				return true
+			}
+		}
+		return false
+	default:
+		// bool, int, float, pointer, interface, etc. don't need move semantics
+		return false
+	}
+}
+
 func AssignExpr(n ir.Node) ir.Node { return typecheck(n, ctxExpr|ctxAssign) }
 func Expr(n ir.Node) ir.Node       { return typecheck(n, ctxExpr) }
 func Stmt(n ir.Node) ir.Node       { return typecheck(n, ctxStmt) }

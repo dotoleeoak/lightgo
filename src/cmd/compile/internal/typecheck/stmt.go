@@ -165,7 +165,7 @@ assignOK:
 	// move semantics: after assignment, mark variables as moved
 	if isUserCode(stmt.Pos()) {
 		for _, n := range rhs {
-			if n.Op() == ir.ONAME {
+			if n.Op() == ir.ONAME && needsMoveSemantics(n.Type()) {
 				n.(*ir.Name).Ownership = ir.StateMoved
 			}
 		}

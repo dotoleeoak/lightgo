@@ -260,7 +260,7 @@ func tcCall(n *ir.CallExpr, top int) ir.Node {
 	// move semantics: after passing to function, mark struct arguments as moved
 	if isUserCode(n.Pos()) {
 		for _, arg := range n.Args {
-			if arg.Op() == ir.ONAME {
+			if arg.Op() == ir.ONAME && needsMoveSemantics(arg.Type()) {
 				arg.(*ir.Name).Ownership = ir.StateMoved
 			}
 		}
