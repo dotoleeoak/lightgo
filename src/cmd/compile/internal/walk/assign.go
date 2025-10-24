@@ -227,7 +227,27 @@ func walkReturn(n *ir.ReturnStmt) ir.Node {
 	fn := ir.CurFunc
 
 	fn.NumReturns++
+
+	// Insert deallocation calls before return
+	// This implements Rust-style move semantics
+	// Filter out variables that are being returned - they shouldn't be freed
+	var localVars []*ir.Name
+	for _, v := range fn.Dcl {
+		// Skip output parameters (PPARAMOUT) - they're being returned
+		if v.Class == ir.PPARAMOUT {
+			continue
+		}
+		localVars = append(localVars, v)
+	}
+	var freeStmts []ir.Node
+	insertDeallocations(&freeStmts, localVars)
+
 	if len(n.Results) == 0 {
+		// No return values - prepend frees before return
+		if len(freeStmts) > 0 {
+			freeStmts = append(freeStmts, n)
+			return ir.NewBlockStmt(n.Pos(), freeStmts)
+		}
 		return n
 	}
 
@@ -239,6 +259,12 @@ func walkReturn(n *ir.ReturnStmt) ir.Node {
 	}
 
 	n.Results = ascompatee(n.Op(), dsts, n.Results)
+
+	// Prepend deallocation calls before return (after result assignment)
+	if len(freeStmts) > 0 {
+		freeStmts = append(freeStmts, n)
+		return ir.NewBlockStmt(n.Pos(), freeStmts)
+	}
 	return n
 }
 

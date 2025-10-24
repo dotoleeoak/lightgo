@@ -95,7 +95,26 @@ func walkStmt(n ir.Node) ir.Node {
 
 	case ir.OBLOCK:
 		n := n.(*ir.BlockStmt)
+
+		// First pass: collect variables declared in this block
+		for _, stmt := range n.List {
+			if stmt.Op() == ir.ODCL {
+				decl := stmt.(*ir.Decl)
+				n.Decls = append(n.Decls, decl.X)
+			}
+		}
+
+		// Walk all statements in the block
 		walkStmtList(n.List)
+
+		// Insert deallocation calls for variables declared in this block
+		// that are going out of scope
+		var freeStmts []ir.Node
+		insertDeallocations(&freeStmts, n.Decls)
+		if len(freeStmts) > 0 {
+			n.List = append(n.List, freeStmts...)
+		}
+
 		return n
 
 	case ir.OCASE:
@@ -187,7 +206,25 @@ func walkFor(n *ir.ForStmt) ir.Node {
 	}
 
 	n.Post = walkStmt(n.Post)
+
+	// Collect variables declared in the for loop body
+	var declaredVars []*ir.Name
+	for _, stmt := range n.Body {
+		if stmt.Op() == ir.ODCL {
+			decl := stmt.(*ir.Decl)
+			declaredVars = append(declaredVars, decl.X)
+		}
+	}
+
 	walkStmtList(n.Body)
+
+	// Insert deallocation at end of each loop iteration
+	var freeStmts []ir.Node
+	insertDeallocations(&freeStmts, declaredVars)
+	if len(freeStmts) > 0 {
+		n.Body = append(n.Body, freeStmts...)
+	}
+
 	return n
 }
 
@@ -223,7 +260,36 @@ func walkGoDefer(n *ir.GoDeferStmt) ir.Node {
 // walkIf walks an OIF node.
 func walkIf(n *ir.IfStmt) ir.Node {
 	n.Cond = walkExpr(n.Cond, n.PtrInit())
+
+	// Collect and handle variables in the body
+	var bodyVars []*ir.Name
+	for _, stmt := range n.Body {
+		if stmt.Op() == ir.ODCL {
+			decl := stmt.(*ir.Decl)
+			bodyVars = append(bodyVars, decl.X)
+		}
+	}
 	walkStmtList(n.Body)
+	var bodyFreeStmts []ir.Node
+	insertDeallocations(&bodyFreeStmts, bodyVars)
+	if len(bodyFreeStmts) > 0 {
+		n.Body = append(n.Body, bodyFreeStmts...)
+	}
+
+	// Collect and handle variables in the else branch
+	var elseVars []*ir.Name
+	for _, stmt := range n.Else {
+		if stmt.Op() == ir.ODCL {
+			decl := stmt.(*ir.Decl)
+			elseVars = append(elseVars, decl.X)
+		}
+	}
 	walkStmtList(n.Else)
+	var elseFreeStmts []ir.Node
+	insertDeallocations(&elseFreeStmts, elseVars)
+	if len(elseFreeStmts) > 0 {
+		n.Else = append(n.Else, elseFreeStmts...)
+	}
+
 	return n
 }

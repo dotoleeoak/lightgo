@@ -129,6 +129,8 @@ func NewAssignOpStmt(pos src.XPos, asOp Op, x, y Node) *AssignOpStmt {
 type BlockStmt struct {
 	miniStmt
 	List Nodes
+	// Decls tracks variables declared in this block (for scope-based deallocation)
+	Decls []*Name
 }
 
 func NewBlockStmt(pos src.XPos, list []Node) *BlockStmt {

@@ -327,3 +327,73 @@ func mapclone(m any) any {
 	e.data = (unsafe.Pointer)(map_)
 	return m
 }
+
+// freemap explicitly deallocates a map and all its backing storage.
+// This is called when a map's ownership is no longer valid (moved or out of scope).
+// After calling this function, the map should not be used.
+//
+// This frees:
+// - The map header (maps.Map structure)
+// - The directory array (if not small map)
+// - All table groups and their storage
+// - All key and value allocations
+//
+//go:linkname freemap
+func freemap(m *maps.Map, t *abi.MapType) {
+	if m == nil {
+		return
+	}
+
+	// Notify sanitizers that map memory is being freed (pre-clear)
+	if msanenabled {
+		msanwrite(unsafe.Pointer(m), unsafe.Sizeof(maps.Map{}))
+	}
+	if asanenabled {
+		asanwrite(unsafe.Pointer(m), unsafe.Sizeof(maps.Map{}))
+	}
+	if raceenabled {
+		racewritepc(unsafe.Pointer(m), sys.GetCallerPC(), abi.FuncPCABIInternal(freemap))
+	}
+
+	// Clear the map to release all entries and backing storage
+	// This handles freeing:
+	// - All key/value pairs
+	// - All table groups
+	// - Directory arrays
+	m.Clear(t)
+
+	// Now free the map header itself
+	span := spanOfHeap(uintptr(unsafe.Pointer(m)))
+	if span == nil {
+		// Not a heap allocation, might be stack-allocated or static
+		return
+	}
+
+	mapHeaderSize := unsafe.Sizeof(maps.Map{})
+
+	// Free the map header back to the allocator
+	if span.spanclass.sizeclass() == 0 {
+		// Large allocation - free the entire span
+		systemstack(func() {
+			if span.state.get() == mSpanInUse && span.allocCount == 1 {
+				mheap_.freeSpan(span)
+			}
+		})
+	} else {
+		// Small allocation - mark as free in span's allocBits
+		systemstack(func() {
+			freeObject(span, uintptr(unsafe.Pointer(m)))
+		})
+	}
+
+	// Notify sanitizers that map has been freed (post-free)
+	if msanenabled {
+		msanfree(unsafe.Pointer(m), mapHeaderSize)
+	}
+	if asanenabled {
+		asanpoison(unsafe.Pointer(m), mapHeaderSize)
+	}
+	if raceenabled {
+		racefree(unsafe.Pointer(m), mapHeaderSize)
+	}
+}

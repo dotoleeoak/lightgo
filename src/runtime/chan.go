@@ -968,3 +968,126 @@ func racenotify(c *hchan, idx uint, sg *sudog) {
 		}
 	}
 }
+
+// freechan explicitly deallocates a channel and all its backing storage.
+// This is called when a channel's ownership is no longer valid (moved or out of scope).
+// After calling this function, the channel should not be used.
+//
+// This frees:
+// - The channel header (hchan structure)
+// - The buffer array (if buffered channel)
+//
+// Note: This does NOT handle waiting goroutines - the channel should be closed
+// and all goroutines unblocked before freeing.
+//
+//go:linkname freechan
+func freechan(c *hchan) {
+	if c == nil {
+		return
+	}
+
+	// Notify sanitizers that channel memory is being freed
+	if msanenabled {
+		msanwrite(unsafe.Pointer(c), unsafe.Sizeof(hchan{}))
+	}
+	if asanenabled {
+		asanwrite(unsafe.Pointer(c), unsafe.Sizeof(hchan{}))
+	}
+	if raceenabled {
+		racewritepc(c.raceaddr(), sys.GetCallerPC(), abi.FuncPCABIInternal(freechan))
+	}
+
+	// Determine how the channel was allocated
+	// Based on makechan(), there are three allocation patterns:
+	// 1. mem == 0: hchan only (unbuffered or zero-sized elements)
+	// 2. !elem.Pointers(): hchan+buf in one allocation
+	// 3. elem.Pointers(): hchan and buf are separate allocations
+
+	// Check if buffer was allocated separately
+	bufSize := uintptr(c.dataqsiz) * uintptr(c.elemsize)
+	hchanAndBuf := bufSize > 0 && !c.elemtype.Pointers()
+
+	// Free the buffer if it was allocated separately
+	if bufSize > 0 && c.elemtype.Pointers() && c.buf != nil {
+		// Buffer was allocated separately - free it
+		bufSpan := spanOfHeap(uintptr(c.buf))
+		if bufSpan != nil {
+			// Clear buffer memory
+			if c.elemtype.Pointers() {
+				memclrHasPointers(c.buf, bufSize)
+			} else {
+				memclrNoHeapPointers(c.buf, bufSize)
+			}
+
+			// Notify sanitizers
+			if msanenabled {
+				msanfree(c.buf, bufSize)
+			}
+			if asanenabled {
+				asanpoison(c.buf, bufSize)
+			}
+			if raceenabled {
+				racefree(c.buf, bufSize)
+			}
+
+			// Free the buffer
+			if bufSpan.spanclass.sizeclass() == 0 {
+				systemstack(func() {
+					if bufSpan.state.get() == mSpanInUse && bufSpan.allocCount == 1 {
+						mheap_.freeSpan(bufSpan)
+					}
+				})
+			} else {
+				systemstack(func() {
+					freeObject(bufSpan, uintptr(c.buf))
+				})
+			}
+		}
+	}
+
+	// Now free the hchan (and buffer if allocated together)
+	span := spanOfHeap(uintptr(unsafe.Pointer(c)))
+	if span == nil {
+		// Not a heap allocation, might be stack-allocated or static
+		return
+	}
+
+	// Calculate the size of the allocation
+	var allocSize uintptr
+	if hchanAndBuf {
+		// hchan and buf were allocated together
+		allocSize = hchanSize + bufSize
+	} else {
+		// Just the hchan header
+		allocSize = hchanSize
+	}
+
+	// Clear the hchan memory
+	memclrNoHeapPointers(unsafe.Pointer(c), allocSize)
+
+	// Free the hchan (and buffer if together)
+	if span.spanclass.sizeclass() == 0 {
+		// Large allocation - free the entire span
+		systemstack(func() {
+			if span.state.get() == mSpanInUse && span.allocCount == 1 {
+				mheap_.freeSpan(span)
+			}
+		})
+	} else {
+		// Small allocation - mark as free in span's allocBits
+		systemstack(func() {
+			freeObject(span, uintptr(unsafe.Pointer(c)))
+		})
+	}
+
+	// Notify sanitizers that channel has been freed (post-free)
+	if msanenabled {
+		msanfree(unsafe.Pointer(c), allocSize)
+	}
+	if asanenabled {
+		asanpoison(unsafe.Pointer(c), allocSize)
+	}
+	if raceenabled {
+		racefree(unsafe.Pointer(c), allocSize)
+	}
+}

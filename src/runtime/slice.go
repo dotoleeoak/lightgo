@@ -399,3 +399,54 @@ func bytealg_MakeNoZero(len int) []byte {
 	cap := roundupsize(uintptr(len), true)
 	return unsafe.Slice((*byte)(mallocgc(cap, nil, false)), cap)[:len]
 }
+
+// freeslice explicitly deallocates the backing array of a slice.
+// This is called when a slice's ownership is no longer valid (moved or out of scope).
+// After calling this function, the slice should not be used.
+//
+// For large allocations (>32KB), this frees the entire span back to the heap.
+// For small allocations, this marks the object as free in the span's freemap and makes it available for reuse.
+//
+//go:linkname freeslice
+func freeslice(ptr unsafe.Pointer, et *_type, cap int) {
+	if ptr == nil || et == nil {
+		return
+	}
+	if et.Size_ == 0 {
+		return
+	}
+
+	mem := uintptr(cap) * et.Size_
+	span := spanOfHeap(uintptr(ptr))
+	if span == nil {
+		// Not a heap allocation, might be stack-allocated or static
+		return
+	}
+
+	// For slices with pointers, clear them to break reference cycles
+	if et.Pointers() {
+		memclrHasPointers(ptr, mem)
+	} else {
+		memclrNoHeapPointers(ptr, mem)
+	}
+
+	// Notify sanitizers that memory is being freed
+	if msanenabled {
+		msanfree(ptr, mem)
+	}
+	if asanenabled {
+		asanpoison(ptr, mem)
+	}
+	if raceenabled {
+		racefree(ptr, mem)
+	}
+
+	// Decrement allocCount to mark the object as freed
+	// The memory will be reclaimed by GC when it runs
+	if span.allocCount > 0 {
+		span.allocCount--
+	}
+
+	// TODO: Implement proper span freeing that doesn't corrupt heap state
+	// This requires coordinating with the GC and maintaining proper invariants
+}

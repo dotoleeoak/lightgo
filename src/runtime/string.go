@@ -559,3 +559,60 @@ func gostringw(strw *uint16) string {
 	b[n2] = 0 // for luck
 	return s[:n2]
 }
+
+// freestring explicitly deallocates the backing array of a string.
+// This is called when a string's ownership is no longer valid (moved or out of scope).
+// After calling this function, the string should not be used.
+//
+// For large allocations (>32KB), this frees the entire span back to the heap.
+// For small allocations, this marks the object as free in the span's freemap and makes it available for reuse.
+//
+// Note: Strings are immutable and never contain pointers, so no pointer clearing is needed.
+//
+//go:linkname freestring
+func freestring(s string) {
+	if len(s) == 0 {
+		return
+	}
+
+	ptr := unsafe.Pointer(unsafe.StringData(s))
+	if ptr == nil {
+		return
+	}
+
+	mem := uintptr(len(s))
+	span := spanOfHeap(uintptr(ptr))
+	if span == nil {
+		// Not a heap allocation, might be stack-allocated or static
+		return
+	}
+
+	// Strings never contain pointers, so use memclrNoHeapPointers
+	memclrNoHeapPointers(ptr, mem)
+
+	// Notify sanitizers that memory is being freed
+	if msanenabled {
+		msanfree(ptr, mem)
+	}
+	if asanenabled {
+		asanpoison(ptr, mem)
+	}
+	if raceenabled {
+		racefree(ptr, mem)
+	}
+
+	// Free the memory back to the allocator
+	if span.spanclass.sizeclass() == 0 {
+		// Large allocation (>32KB) - free the entire span
+		systemstack(func() {
+			if span.state.get() == mSpanInUse && span.allocCount == 1 {
+				mheap_.freeSpan(span)
+			}
+		})
+	} else {
+		// Small allocation - mark as free in span's allocBits
+		systemstack(func() {
+			freeObject(span, uintptr(ptr))
+		})
+	}
+}

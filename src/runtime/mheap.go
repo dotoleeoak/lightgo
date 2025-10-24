@@ -1723,6 +1723,49 @@ func (h *mheap) freeManual(s *mspan, typ spanAllocType) {
 	unlock(&h.lock)
 }
 
+// freeObject marks a small object as free in its span's allocation bitmap.
+// This makes the object available for reuse by future allocations.
+// Must be called on the system stack.
+//
+//go:systemstack
+func freeObject(span *mspan, ptr uintptr) {
+	// For large allocations (sizeclass 0), elemsize might be 0 or the entire allocation
+	if span.elemsize == 0 {
+		return
+	}
+
+	objIndex := (ptr - span.startAddr) / span.elemsize
+
+	bytep, mask := span.allocBits.bitp(objIndex)
+	if *bytep&mask == 0 {
+		// Already free - this could indicate a double-free bug
+		return
+	}
+
+	// Mark as free in allocBits using atomic operation
+	atomic.And8(bytep, ^mask)
+
+	// Update span metadata
+	if span.allocCount > 0 {
+		span.allocCount--
+	}
+
+	// Update freeindex if this object is before the current freeindex
+	if uint16(objIndex) < span.freeindex {
+		span.freeindex = uint16(objIndex)
+	}
+
+	// Update allocCache for fast allocation path
+	// allocCache is a 64-bit bitmap starting from freeindex
+	if uint16(objIndex) >= span.freeindex {
+		cacheIdx := objIndex - uintptr(span.freeindex)
+		if cacheIdx < 64 {
+			// Set the bit in allocCache to indicate this slot is free
+			atomic.Or64(&span.allocCache, 1<<cacheIdx)
+		}
+	}
+}
+
 func (h *mheap) freeSpanLocked(s *mspan, typ spanAllocType) {
 	assertLockHeld(&h.lock)
 

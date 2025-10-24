@@ -209,6 +209,7 @@ func main() {
 		}
 	}()
 
+	// TODO: disable GC
 	gcenable()
 	defaultGOMAXPROCSUpdateEnable() // don't STW before runtime initialized.
 

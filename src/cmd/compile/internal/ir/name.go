@@ -407,3 +407,45 @@ const (
 	StateValid OwnershipKind = iota // variable is in a valid state
 	StateMoved                      // variable has been moved
 )
+
+// Moved reports whether the variable has been moved (Rust-style move semantics).
+func (n *Name) Moved() bool {
+	return n.Ownership == StateMoved
+}
+
+// SetMoved marks the variable as moved.
+func (n *Name) SetMoved(moved bool) {
+	if moved {
+		n.Ownership = StateMoved
+	} else {
+		n.Ownership = StateValid
+	}
+}
+
+// NeedsFree reports whether the variable needs explicit deallocation.
+// This is true for:
+// 1. Variables that have been moved (ownership transferred)
+// 2. Variables that own heap-allocated data (slices, strings, maps, channels)
+//
+// Note: The caller is responsible for checking scope - this only checks if the
+// variable is a candidate for deallocation based on its type and state.
+func (n *Name) NeedsFree() bool {
+	// Always free moved variables
+	if n.Moved() {
+		return true
+	}
+
+	// For variables going out of scope, only free if they own heap data
+	// Stack-only variables don't need explicit deallocation
+	if n.Class != PAUTO && n.Class != PPARAM && n.Class != PPARAMOUT {
+		return false
+	}
+
+	t := n.Type()
+	if t == nil {
+		return false
+	}
+
+	// Only free types that have heap-allocated backing stores
+	return t.IsSlice() || t.IsString() || t.IsMap() || t.IsChan()
+}

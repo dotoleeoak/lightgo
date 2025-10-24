@@ -433,3 +433,111 @@ func findStaticValues(fn *ir.Func) map[ir.Node]ir.Node {
 	})
 	return m
 }
+
+// insertDeallocations inserts explicit deallocation calls for variables
+// that need to be freed. This implements Rust-style move semantics.
+//
+// It analyzes ir.Name nodes and inserts calls to free* functions for:
+// - Slices: freeslice(ptr, elemtype, cap)
+// - Strings: freestring(s)
+// - Maps: freemap(m, maptype)
+// - Channels: freechan(c)
+//
+// Variables are freed if:
+// 1. They have been moved (Ownership == StateMoved), OR
+// 2. They own heap-allocated data (slice/string/map/channel) and are local variables
+//
+// Note: Currently called only at function exit points (return statements).
+// TODO: Implement block-scope tracking to free variables at inner block exits.
+func insertDeallocations(stmts *[]ir.Node, names []*ir.Name) {
+	if len(names) == 0 {
+		return
+	}
+
+	// Don't insert deallocations when compiling standard library packages.
+	// The free* functions are defined in runtime, and we can't call them
+	// during Go's bootstrap process or from within the standard library itself.
+	//
+	// Only enable explicit deallocation for user code (packages outside std).
+	// Standard library packages are those without a "." in the import path
+	// (e.g., "errors", "fmt", "internal/xxx") vs user packages which typically
+	// have domain names (e.g., "github.com/user/repo").
+	//
+	// For now, we conservatively disable deallocation for all standard library
+	// compilation to avoid bootstrap issues.
+	if base.Flag.Std || base.Flag.CompilingRuntime {
+		return
+	}
+
+	var frees []ir.Node
+	for _, n := range names {
+		if !n.NeedsFree() {
+			continue
+		}
+
+		// Debug: Always try to free for now (ignore escape analysis)
+		// TODO: Properly check if variable escaped to heap using n.Esc()
+		// if !n.Addrtaken() && n.Class == ir.PAUTO {
+		// 	// Stack-only variable, no need to free
+		// 	continue
+		// }
+
+		t := n.Type()
+		if t == nil {
+			continue
+		}
+
+		pos := n.Pos()
+		var freeCall ir.Node
+
+		switch {
+		case t.IsSlice():
+			// freeslice(ptr, elemtype, cap)
+			ptr := ir.NewUnaryExpr(pos, ir.OSPTR, n)
+			ptr.SetType(t.Elem().PtrTo())
+			ptr.SetTypecheck(1)
+
+			// Convert to unsafe.Pointer
+			unsafePtr := ir.NewConvExpr(pos, ir.OCONVNOP, types.Types[types.TUNSAFEPTR], ptr)
+			unsafePtr.SetTypecheck(1)
+
+			elemType := reflectdata.TypePtrAt(pos, t.Elem())
+
+			cap := ir.NewUnaryExpr(pos, ir.OCAP, n)
+			cap.SetType(types.Types[types.TINT])
+			cap.SetTypecheck(1)
+
+			// No type substitution needed - all params are concrete types
+			fn := typecheck.LookupRuntime("freeslice")
+			freeCall = mkcallstmt1(fn, unsafePtr, elemType, cap)
+
+		case t.IsString():
+			// freestring(s) - no type substitution needed
+			fn := typecheck.LookupRuntime("freestring")
+			freeCall = mkcallstmt1(fn, n)
+
+		case t.IsMap():
+			// freemap(m, maptype)
+			mapType := reflectdata.TypePtrAt(pos, t)
+			// No type substitution needed - all params are concrete types
+			fn := typecheck.LookupRuntime("freemap")
+			freeCall = mkcallstmt1(fn, n, mapType)
+
+		case t.IsChan():
+			// freechan(c) - no type substitution needed
+			fn := typecheck.LookupRuntime("freechan")
+			freeCall = mkcallstmt1(fn, n)
+
+		default:
+			// Not a type we explicitly deallocate
+			continue
+		}
+
+		if freeCall != nil {
+			frees = append(frees, freeCall)
+		}
+	}
+
+	// Append deallocation calls to the end of the statement list
+	*stmts = append(*stmts, frees...)
+}
